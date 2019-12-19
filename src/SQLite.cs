@@ -315,6 +315,7 @@ namespace SQLite
 			_open = true;
 
 			StoreDateTimeAsTicks = connectionString.StoreDateTimeAsTicks;
+			StoreTimeSpanAsTicks = connectionString.StoreTimeSpanAsTicks;
 			DateTimeStringFormat = connectionString.DateTimeStringFormat;
 			DateTimeStyle = connectionString.DateTimeStyle;
 
@@ -1858,6 +1859,60 @@ namespace SQLite
 			return rowsAffected;
 		}
 
+		public int Update(Type objType, long recordId, IEnumerable<KeyValuePair<string, object>> values)
+		{
+			if (objType == null || values == null || values.Count() == 0)
+			{
+				return 0;
+			}
+
+			var map = GetMapping(objType);
+
+			var pk = map.PK;
+
+			if (pk == null)
+			{
+				throw new NotSupportedException("Cannot update " + map.TableName + ": it has no PK");
+			}
+
+			var cols = new List<string>(values.Count());
+			var vals = new List<object>(values.Count());
+			foreach (var v in values)
+			{
+				if (pk.Name != v.Key && map.Columns.Any(c => c.Name == v.Key))
+				{
+					cols.Add(v.Key);
+					vals.Add(v.Value);
+				}
+			}
+
+			vals.Add(recordId);
+
+			var q = string.Format("update \"{0}\" set {1} where {2} = ? ", map.TableName,
+				string.Join(",", (from c in cols select "\"" + c + "\" = ? ").ToArray()), pk.Name);
+
+			int rowsAffected;
+			try
+			{
+				rowsAffected = Execute(q, vals.ToArray());
+			}
+			catch (SQLiteException ex)
+			{
+				if (ex.Result == SQLite3.Result.Constraint && SQLite3.ExtendedErrCode(this.Handle) == SQLite3.ExtendedResult.ConstraintNotNull)
+				{
+					throw NotNullConstraintViolationException.New(ex, map, null);
+				}
+
+				throw;
+			}
+			
+			if (rowsAffected > 0)
+				OnTableChanged(map, NotifyTableChangedAction.Update);
+
+			return rowsAffected;
+		}
+
+
 		/// <summary>
 		/// Updates all specified objects.
 		/// </summary>
@@ -1950,6 +2005,21 @@ namespace SQLite
 			var count = Execute (q, primaryKey);
 			if (count > 0)
 				OnTableChanged (map, NotifyTableChangedAction.Delete);
+			return count;
+		}
+
+		public int DeleteAll<T>(IEnumerable<long> primaryKeys)
+		{
+			var map = GetMapping(typeof(T));
+			var pk = map.PK;
+			if (pk == null)
+			{
+				throw new NotSupportedException("Cannot delete " + map.TableName + ": it has no PK");
+			}
+			var q = string.Format("delete from `{0}` where instr(?, ',' || `{1}` || ',') > 0", map.TableName, pk.Name);
+			var count = Execute(q, "," + string.Join(",", primaryKeys) + ",");
+			if (count > 0)
+				OnTableChanged(map, NotifyTableChangedAction.Delete);
 			return count;
 		}
 
@@ -2277,7 +2347,7 @@ namespace SQLite
 	{
 		public string Name { get; set; }
 
-		public ColumnAttribute (string name)
+		public ColumnAttribute (string name = null)
 		{
 			Name = name;
 		}
@@ -2426,8 +2496,7 @@ namespace SQLite
 
 			var cols = new List<Column> ();
 			foreach (var p in props) {
-				var ignore = p.IsDefined (typeof (IgnoreAttribute), true);
-				if (!ignore) {
+				if (p.IsDefined(typeof(ColumnAttribute), true)) {
 					cols.Add (new Column (p, createFlags));
 				}
 			}
@@ -2517,12 +2586,10 @@ namespace SQLite
 
 			public Column (PropertyInfo prop, CreateFlags createFlags = CreateFlags.None)
 			{
-				var colAttr = prop.CustomAttributes.FirstOrDefault (x => x.AttributeType == typeof (ColumnAttribute));
+				var colAttr = prop.GetCustomAttributes<ColumnAttribute>(true).FirstOrDefault();
 
 				_prop = prop;
-				Name = (colAttr != null && colAttr.ConstructorArguments.Count > 0) ?
-						colAttr.ConstructorArguments[0].Value?.ToString () :
-						prop.Name;
+				Name = colAttr != null && colAttr.Name != null ? colAttr.Name : prop.Name;
 				//If this type is Nullable<T> then Nullable.GetUnderlyingType returns the T, otherwise it returns null, so get the actual type instead
 				ColumnType = Nullable.GetUnderlyingType (prop.PropertyType) ?? prop.PropertyType;
 				Collation = Orm.Collation (prop);

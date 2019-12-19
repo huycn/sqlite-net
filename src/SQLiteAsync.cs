@@ -569,6 +569,11 @@ namespace SQLite
 			return WriteAsync (conn => conn.Update (obj));
 		}
 
+		public Task<int> UpdateAsync<TTable>(long recordId, IEnumerable<KeyValuePair<string, object>> values)
+		{
+			return WriteAsync(conn => conn.Update(typeof(TTable), recordId, values));
+		}
+
 		/// <summary>
 		/// Updates all of the columns of a table using the specified object
 		/// except for its primary key.
@@ -667,6 +672,14 @@ namespace SQLite
 		public Task<int> DeleteAllAsync<T> ()
 		{
 			return WriteAsync (conn => conn.DeleteAll<T> ());
+		}
+
+		public Task<int> DeleteAllAsync<T>(IEnumerable<long> pks)
+		{
+			if (pks == null)
+				throw new ArgumentNullException("pk");
+
+			return WriteAsync (conn => conn.DeleteAll<T>(pks));
 		}
 
 		/// <summary>
